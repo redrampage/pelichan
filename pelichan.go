@@ -4,6 +4,7 @@ import (
 	"github.com/beeker1121/goque"
 	"sync"
 	"time"
+	"fmt"
 )
 
 type DiskBufferedChan struct {
@@ -20,29 +21,30 @@ type DiskBufferedChan struct {
 
 	// `Sink` channel
 	// All outgoing data sent here
-	// On abort, will try to save all data buffered here on disk
+	// On halt, will try to save all data buffered here on disk
 	sink chan interface{}
 
 	////// Signalling internals below //////
 
 	// `Sink` Waitgroup
-	// Waits stop of `DiskReader` and `SourceForwarder` routines
+	// Waits stop of both `DiskReader` and `SourceForwarder` routines
 	sinkWg sync.WaitGroup
 
-	// Abort signal channel
+	// Halt signal channel
 	// When closed signals `SourceForwarder` and `DiskReader` to cease reading/forwarding
-	chAbort chan struct{}
+	// After it completes `Sink` will be closed
+	chHalt chan struct{}
 
 	// Internal `DiskReader` notification channel
 	// Not to be closed! TODO: check if it's leaky without closing
 	// Signals `DiskReader`, that new data is available to read from disk
 	chDRNotify chan struct{}
 
-	// Shutdown Done signal channel
+	// HaltDone signal channel
 	// Notifies that both `SourceForwarder` and `DiskReader` routines has stopped (just as sinkWg but...),
 	// also that `Sink` is clear of any buffered records (either sucked back on disk, or taken by anything reading sink)
-	// and will be closed immediately
-	shutdownDone chan struct{}
+	// and thah `Sink` will be closed immediately
+	haltDone chan struct{}
 
 	// LevelDB Done signal channel
 	// Notifies that shutdown of everything is complete and LevelDB handler has been closed
@@ -75,19 +77,19 @@ type DiskBufferedChan struct {
 	decCB func(item *goque.Item) (interface{}, error)
 
 	// This is optional callback function.
-	// Called in case of failure to store incoming object on disk.
+	// Called in case of failure to internalStore incoming object on disk.
 	EnqErrCB func(obj interface{}, err error)
 
 	// This is optional callback function.
 	// Called in case of failure to retrieve object from disk.
-	// If it returns `true` then reading from disk is stopped and abort channel is closed
+	// If it returns `true` then whole struct is to be halted
 	DeqErrCB func(err error) (abort bool)
 
 	// This is optional callback function.
 	// Called in case of failure to decode object retrieved from disk.
 	// This callback can try to recover by returning object of type that should've been decoded.
 	// If it return nil, then object sending is skipped.
-	// If it returns abort param as `true` then reading from disk is stopped and abort channel is closed
+	// If it returns abort param as `true` then whole structure is to be halted
 	DecErrCB func(item *goque.Item, err error) (obj interface{}, abort bool)
 }
 
@@ -120,8 +122,8 @@ func NewDiskBufferedChan(
 		source:         src,
 		logger:         log,
 		sink:           make(chan interface{}, sinkDepth),
-		chAbort:        make(chan struct{}),
-		shutdownDone:   make(chan struct{}),
+		chHalt:         make(chan struct{}),
+		haltDone:       make(chan struct{}),
 		ldbDone:        make(chan struct{}),
 		chDRAbort:      make(chan struct{}),
 		chDRFlushAbort: make(chan struct{}),
@@ -155,30 +157,68 @@ func (c *DiskBufferedChan) GetStats() (directPasses uint64, storageWrites uint64
 	return c.stats.GetStats()
 }
 
-// Wait till complete shutdown of instance
-func (c *DiskBufferedChan) Wait() {
+// WaitHalt will wait till shutdown of `DiskReader` and `SourceForwarder`
+func (c *DiskBufferedChan) WaitHalt() {
+	<-c.haltDone
+}
+
+// Initiate halt of current instance (shutdown of `DiskReader` and `SourceForwarder`)
+func (c *DiskBufferedChan) HaltAsync() {
+	// Check if abort is already signalled
+	select {
+	case <-c.chHalt:
+		return
+	default:
+		close(c.chHalt)
+	}
+}
+
+// Halt current instance (shutdown of `DiskReader` and `SourceForwarder`) (blocking call)
+func (c *DiskBufferedChan) Halt() {
+	c.HaltAsync()
+	c.WaitHalt()
+}
+
+// WaitClose will wait till halt of instance and closing of LevelDB, but will not initiate it
+func (c *DiskBufferedChan) WaitClose() {
 	<-c.ldbDone
 }
 
-// Abort current instance and wait till complete shutdown of it
-func (c *DiskBufferedChan) Abort() {
-	// Check if abort is already signalled
-	select {
-	case <-c.chAbort:
-		return
-	default:
-		close(c.chAbort)
-	}
-	c.Wait()
+// Halt (if needed) and close LevelDB database asynchronously
+func (c *DiskBufferedChan) CloseAsync() {
+	go func() {
+		defer close(c.ldbDone)
+		c.Halt()
+		<-c.haltDone
+		err := c.ldbQueue.Close()
+		if err != nil {
+			c.logger.Errorf("Failed to close LevelDB: %s", err)
+		}
+	}()
 }
 
-// Stores given object in PersistentDiskQueue
-func (c *DiskBufferedChan) store(obj interface{}) {
+// Halt (if needed) and close LevelDB (blocking call)
+func (c *DiskBufferedChan) Close() {
+	c.CloseAsync()
+	c.WaitClose()
+}
+
+// Stores given object on disk immediately
+func (c *DiskBufferedChan) Store(obj interface{}) error {
 	c.stats.IncSW()
 	_, err := c.ldbQueue.EnqueueObject(obj)
 	if err != nil {
+		return fmt.Errorf("Failed to internalStore object '%+v': %s", obj, err)
+	}
+	return nil
+}
+
+// Stores given object in PersistentDiskQueue, but call error callback in case of error
+func (c *DiskBufferedChan) internalStore(obj interface{}) {
+	err := c.Store(obj)
+	if err != nil {
 		if c.EnqErrCB != nil {
-			c.logger.Errorf("Failed to store object '%+v': %s", obj, err)
+			c.logger.Errorf("Failed to internalStore object '%+v': %s", obj, err)
 			c.EnqErrCB(obj, err)
 		}
 	}
@@ -214,7 +254,7 @@ func (c *DiskBufferedChan) sendOrStore(obj interface{}) {
 		c.stats.IncDP()
 	default:
 		// Sink is full, save obj on disk
-		c.store(obj)
+		c.internalStore(obj)
 		// Saved object, kick reader just in case
 		c.notifyReader()
 	}
@@ -227,21 +267,15 @@ func (c *DiskBufferedChan) sendOrStore(obj interface{}) {
 // try to write it to persistent storage (this is blocking)
 func (c *DiskBufferedChan) startWriters() {
 
-	// Abort listener
+	// Halt listener
 	go func() {
-		<-c.chAbort
+		<-c.chHalt
 		close(c.chDRAbort)
 		close(c.chFWAbort)
 	}()
 
 	// LevelDB close listener
 	go func() {
-		defer close(c.ldbDone)
-		<-c.shutdownDone
-		err := c.ldbQueue.Close()
-		if err != nil {
-			c.logger.Errorf("Failed to close LevelDB: %s", err)
-		}
 	}()
 
 	// Src close listener
@@ -256,7 +290,7 @@ func (c *DiskBufferedChan) startWriters() {
 	// Add for sendOrStore thread
 	// Add for diskQueueReader thread
 	// Both routines will push data in sink, so we must close sink strictly
-	// after them both shutdownDone
+	// after them both haltDone
 	c.sinkWg.Add(2)
 
 	// SendOrStore thread
@@ -289,7 +323,7 @@ func (c *DiskBufferedChan) startWriters() {
 
 	// DiskReader thread
 	// It blocks with one item, util sink is clear to send
-	// We must retrieve and re-store this item on abort
+	// We must retrieve and re-internalStore this item on abort
 	go func(c *DiskBufferedChan) {
 		defer c.sinkWg.Done()
 		defer c.logger.Debugf("Disk reader thread done")
@@ -299,19 +333,19 @@ func (c *DiskBufferedChan) startWriters() {
 			// Early abort catch
 			select {
 			case <-c.chDRAbort:
-				// Re-store received blocked object on abort
+				// Re-internalStore received blocked object on abort
 				c.logger.Debugf("Got item '%s' from disk reader, but abort signalled, so storing", obj)
-				c.store(obj)
+				c.internalStore(obj)
 				continue
 			default:
 			}
-			// Store object on abort when blocked on send to sink
+			// internalStore object on abort when blocked on send to sink
 			select {
 			case c.sink <- obj:
 			case <-c.chDRAbort:
-				// Re-store received blocked object on abort
+				// Re-internalStore received blocked object on abort
 				c.logger.Debugf("Got item '%s' pushing to sink, but abort signalled, so storing", obj)
-				c.store(obj)
+				c.internalStore(obj)
 			}
 		}
 	}(c)
@@ -321,9 +355,9 @@ func (c *DiskBufferedChan) startWriters() {
 	// Also it stores all leftover items in sink
 	go func(c *DiskBufferedChan) {
 		defer close(c.sink)
-		defer close(c.shutdownDone)
+		defer close(c.haltDone)
 
-		// Wait for abort signal
+		// WaitClose for abort signal
 		c.sinkWg.Wait()
 
 		c.logger.Debugf("Both feeders done, time to flush sink")
@@ -336,7 +370,7 @@ func (c *DiskBufferedChan) startWriters() {
 				c.logger.Debugf("LOOP: sink len = %d", len(c.sink))
 				select {
 				case item := <-c.sink:
-					c.store(item)
+					c.internalStore(item)
 				default:
 				}
 			}
@@ -390,11 +424,16 @@ func (c *DiskBufferedChan) getDiskReader() <-chan interface{} {
 					obj, abort := c.retrieve()
 					if abort {
 						// Got abort decision from user func
-						close(c.chAbort) // Global abort
+						close(c.chHalt) // Global abort
 						return
 					}
 					if obj != nil {
-						diskCh <- obj
+						select {
+						case diskCh <- obj:
+						case <-c.chHalt:
+							c.internalStore(obj)
+							return
+						}
 					}
 				}
 			}

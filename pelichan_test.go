@@ -68,7 +68,7 @@ func suck(t *testing.T, sink <-chan interface{}) (cnt int) {
 }
 
 const iters = 10
-const sleepTime = time.Millisecond * 10
+const sleepTime = time.Millisecond * 50
 
 func TestDiskBufferedChan_SimpleDirect(t *testing.T) {
 	os.RemoveAll(dbDirectory)
@@ -86,7 +86,7 @@ func TestDiskBufferedChan_SimpleDirect(t *testing.T) {
 	}
 
 	fwd, wr, rd := d.GetStats()
-	d.Abort()
+	d.Close()
 
 	t.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
 	if fwd != uint64(iters) {
@@ -119,7 +119,7 @@ func TestDiskBufferedChan_SimpleDirectPartial(t *testing.T) {
 	}
 
 	fwd, wr, rd := d.GetStats()
-	d.Abort()
+	d.Close()
 
 	t.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
 	if fwd != uint64(iters/2) {
@@ -142,7 +142,7 @@ func TestDiskBufferedChan_SuddenAbort(t *testing.T) {
 
 	var abortNum = (rand.Int() % (iters - 1)) + 1
 OUT:
-	for i := 1; i < iters; i++ {
+	for i := 1; i <= iters; i++ {
 		select {
 		case src <- &MyStr{"Data_" + strconv.Itoa(i)}:
 		case <-time.Tick(time.Second):
@@ -153,15 +153,15 @@ OUT:
 
 		if i == abortNum {
 			t.Logf("Sudden abort on %d", i)
-			//d.Abort()
-			close(d.chAbort) // Hacky abort without wait for completion
-			<-d.chFWDone     // ...well, with a bit, to ensure precise timeout iteration
+			d.Halt()
+			//close(d.chHalt) // Hacky abort without wait for completion
+			//<-d.chFWDone    // ...well, with a bit, to ensure precise timeout iteration
 		}
 	}
 
 	fwd, wr, rd := d.GetStats()
-	d.Wait()
 	close(src)
+	d.Close()
 	t.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
 	t.Logf("Received: %d\n", sum1)
 
@@ -174,7 +174,7 @@ OUT:
 	close(src)
 
 	sum2 := suck(t, sink2)
-	d2.Abort()
+	d2.Close()
 
 	fwd, wr, rd = d2.GetStats()
 	t.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
@@ -198,7 +198,7 @@ OUT:
 		}
 	}
 
-	d.Abort()
+	d.Close()
 
 	fwd, wr, rd := d.GetStats()
 	t.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
@@ -212,7 +212,7 @@ OUT:
 	close(src)
 
 	sum := suck(t, sink2)
-	d2.Abort()
+	d2.Close()
 
 	fwd, wr, rd = d2.GetStats()
 	t.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
@@ -227,7 +227,7 @@ OUT:
 func TestDiskBufferedChan_SourceClose(t *testing.T) {
 	os.RemoveAll(dbDirectory)
 	d, src, sink, _ := prepChan(t, 0, 0, DecMyStr)
-	defer d.Abort()
+	defer d.Close()
 
 	for i := 1; i <= iters; i++ {
 		src <- &MyStr{"Data_" + strconv.Itoa(i)}
@@ -244,10 +244,47 @@ func TestDiskBufferedChan_SourceClose(t *testing.T) {
 	}
 }
 
+func TestDiskBufferedChan_SourceCloseAndHalt(t *testing.T) {
+	os.RemoveAll(dbDirectory)
+	d, src, sink, _ := prepChan(t, 0, 0, DecMyStr)
+
+	for i := 1; i <= iters; i++ {
+		src <- &MyStr{"Data_" + strconv.Itoa(i)}
+	}
+	close(src)
+
+	fwd, wr, rd := d.GetStats()
+	t.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
+
+	var abortNum = (rand.Int() % (iters - 1)) + 1
+	var cnt = 0
+	for range sink {
+		cnt++
+		if abortNum == cnt {
+			d.HaltAsync()
+		}
+	}
+	t.Logf("Got %d/%d, aborted on %d", cnt, iters, abortNum)
+	d.WaitHalt()
+	d.Close()
+
+	d, src, sink, _ = prepChan(t, 0, 0, DecMyStr)
+	defer d.Close()
+	close(src)
+	for range sink {
+		cnt++
+	}
+
+	t.Logf("Got %d/%d", cnt, iters)
+	if cnt != iters {
+		t.Fatalf("Expected %d items, got %d", iters, cnt)
+	}
+}
+
 func TestDiskBufferedChan_SourceCloseBufferedSink(t *testing.T) {
 	os.RemoveAll(dbDirectory)
 	d, src, sink, _ := prepChan(t, 0, iters, DecMyStr)
-	defer d.Abort()
+	defer d.Close()
 
 	for i := 1; i <= iters; i++ {
 		src <- &MyStr{"Data_" + strconv.Itoa(i)}
@@ -273,7 +310,7 @@ func TestDiskBufferedChan_SourceCloseBufferedSink(t *testing.T) {
 func TestDiskBufferedChan_Consistency(t *testing.T) {
 	os.RemoveAll(dbDirectory)
 	d, src, sink, _ := prepChan(t, 0, 0, DecMyInt)
-	defer d.Abort()
+	defer d.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -325,7 +362,7 @@ func BenchmarkDiskBufferedChan_FWD(b *testing.B) {
 
 	fwd, wr, rd := dbch.GetStats()
 	b.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
-	dbch.Abort()
+	dbch.Close()
 }
 
 func BenchmarkDiskBufferedChan_DiskRnW(b *testing.B) {
@@ -349,7 +386,7 @@ func BenchmarkDiskBufferedChan_DiskRnW(b *testing.B) {
 
 	fwd, wr, rd := dbch.GetStats()
 	b.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
-	dbch.Abort()
+	dbch.Close()
 }
 
 type testLogger struct {

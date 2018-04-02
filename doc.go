@@ -19,10 +19,26 @@ package pelichan
 //             | Disk |---/
 //             +------+
 //
-// There is two ways to correctly terminate pipe's operation:
+// `DiskBufferedChan` (DBC) has three primary states:
 //
-// - Close incoming `Source` pipe:
-//   After that all messages stored on disk will be pumped to `Sink` channel, and `Sink will be closed afterwards`
+// * Normal Operation - When it forwards incoming messages and try to store them on disk, if queue is full
+// * Halt - (after calling halt method) when all reading/forwarding stopped, but `DBC` still can receive objects into
+//   disk queue via `Store()` method.
+// * Closed - when object is halted and LevelDB backend is closed, DBC now can be disposed
 //
-// - Call Abort()
-//   This will immediately cease piping operation and store all unsent messages on disk
+// How to abort:
+//
+// 1) Close incoming `Source` pipe
+//    After that all messages stored on disk will be pumped to `Sink` channel, and `Sink` will be closed afterwards
+//    Call `Close` to close LevelDB backend and you're done.
+//    If you want to save something in LevelDB, you can first wait for `DiskReader` to close with `WaitHalt()` and then
+//    inject some messages via `Store` method, just before calling `Close`.
+//    If you call halt during this messages in `Sink` will be sucked back on disk.
+//
+// 2) Call Halt()
+//    This will stop both `SourceForwarder` and `DiskReader`, and all messages on disk be stored there. Messages
+//    buffered in `Sink` will be sucked back to disk, LevelDB will be open till call of `Close`, so you can put in
+//    some messages via `Store` before closing it.
+//
+// 3) Call Close()
+//    You can just call `Close` to halt and close DBC ASAP
