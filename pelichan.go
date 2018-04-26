@@ -7,6 +7,10 @@ import (
 	"fmt"
 )
 
+// Interval of polling of `Sink` channel about it's depletion after `Source` channel is closed without abort and
+// disk buffer is depleted too
+var SinkDepletionPollingInterval = 10 * time.Millisecond
+
 type DiskBufferedChan struct {
 	// LevelDB storage path
 	ldbPath string
@@ -363,22 +367,26 @@ func (c *DiskBufferedChan) startWriters() {
 		c.logger.Debugf("Both feeders done, time to flush sink")
 		// Feeders closed, suck up remaining items to persistent storage
 		c.logger.Debugf("START: sink len = %d", len(c.sink))
-		// Suck-back sink, only on abort, else wait for sink clearup
-		select {
-		case <-c.chDRAbort:
-			for len(c.sink) > 0 {
-				c.logger.Debugf("LOOP: sink len = %d", len(c.sink))
-				select {
-				case item := <-c.sink:
-					c.internalStore(item)
-				default:
-				}
+
+		// Suck-back sink, only on abort, else wait for sink to be emptied
+		WAITLOOP:
+		for {
+			c.logger.Debugf("LOOP: sink len = %d", len(c.sink))
+			if len(c.sink) == 0 {
+				break WAITLOOP
 			}
-		default:
-			// FIXME: abort after SRC close may result in failure here
-			// FIXME: sleep is hacky, need something better
-			for len(c.sink) > 0 {
-				time.Sleep(10 * time.Millisecond)
+			select {
+			case <-c.chDRAbort: // Sudden abort on sink waiting sink to clear
+				if len(c.sink) > 0 {
+					// Sink is not empty, if aborted, try to store
+					select {
+					case item := <-c.sink:
+						c.internalStore(item)
+					default:
+					}
+				}
+			default: // Waiting for sink to clear
+				time.Sleep(SinkDepletionPollingInterval)
 			}
 		}
 	}(c)

@@ -307,6 +307,29 @@ func TestDiskBufferedChan_SourceCloseBufferedSink(t *testing.T) {
 	}
 }
 
+func TestDiskBufferedChan_SourceCloseHalfBufferedSink(t *testing.T) {
+	os.RemoveAll(dbDirectory)
+	d, src, sink, _ := prepChan(t, 0, iters/2, DecMyStr)
+	defer d.Close()
+
+	for i := 1; i <= iters; i++ {
+		src <- &MyStr{"Data_" + strconv.Itoa(i)}
+	}
+	close(src)
+
+	fwd, wr, rd := d.GetStats()
+	t.Logf("Pipe stats:\nDirect: %d\nWrites: %d\nReads: %d\n", fwd, wr, rd)
+
+	time.Sleep(sleepTime*3)
+	t.Logf("Disk has '%d' records", d.ldbQueue.Length())
+
+	gotnum := suck(t, sink)
+	t.Logf("Got %d/%d", gotnum, iters)
+	if gotnum != iters {
+		t.Fatalf("Expected %d items, got %d", iters, gotnum)
+	}
+}
+
 func TestDiskBufferedChan_Consistency(t *testing.T) {
 	os.RemoveAll(dbDirectory)
 	d, src, sink, _ := prepChan(t, 0, 0, DecMyInt)
