@@ -6,6 +6,8 @@ A persistent buffered channel.
 
 **Current state is:** beta-testing
 
+[GoDoc](https://godoc.org/github.com/redrampage/pelichan)
+
  `Pelichan` provides an easy-to-use persistent(disk-buffered) channel-like
  structure, with an emphasis on minimization of message loss and allowing graceful 
  application restart.
