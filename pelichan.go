@@ -86,14 +86,14 @@ type DiskBufferedChan struct {
 
 	// This is optional callback function.
 	// Called in case of failure to retrieve object from disk.
-	// If it returns `true` then whole struct is to be halted
+	// If it returns `true` then whole DiskBufferedChan is to be halted
 	DeqErrCB func(err error) (abort bool)
 
 	// This is optional callback function.
 	// Called in case of failure to decode object retrieved from disk.
 	// This callback can try to recover by returning object of type that should've been decoded.
 	// If it return nil, then object sending is skipped.
-	// If it returns abort param as `true` then whole structure is to be halted
+	// If it returns abort param as `true` then whole DiskBufferedChan is to be halted
 	DecErrCB func(item *goque.Item, err error) (obj interface{}, abort bool)
 }
 
@@ -149,7 +149,7 @@ func NewDiskBufferedChan(
 	return ret, ret.sink, nil
 }
 
-// Returns statistics of current instance
+// Returns statistics of current DBC instance
 //
 // `directPasses` is a number of object passed from `Source` to `Sink` without storing on disk
 // `storageWrites` is a number of objects that has been stored to disk

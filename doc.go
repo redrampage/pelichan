@@ -9,15 +9,15 @@ package pelichan
 //
 // Simplified operation diagram:
 //
-// user data +--------+ direct fwd  +------+ consumers
-// --------->| SrcFwd |------------>| Sink |---->
-// SRC       +--------+             +------+
-//        Sink full |  +--------+      ^
-//                  |  | DskRdr |------/
-//                  V  +--------+
-//             +------+   ^ read n forward
-//             | Disk |---/
-//             +------+
+//   user data +--------+ direct fwd  +------+ consumers
+//   --------->| SrcFwd |------------>| Sink |---->
+//   SRC       +--------+             +------+
+// store on Sink full |  +--------+      ^
+//                    |  | DskRdr |------/
+//                    V  +--------+
+//               +------+   ^ read n forward (RnF)
+//               | Disk |---/
+//               +------+
 //
 // `DiskBufferedChan` (DBC) has three primary states:
 //
