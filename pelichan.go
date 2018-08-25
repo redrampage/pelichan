@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// Interval of polling of `Sink` channel about it's depletion after `Source` channel is closed without abort and
+// Interval of polling of Sink channel about it's depletion after Source channel is closed without abort and
 // disk buffer is depleted too
 var SinkDepletionPollingInterval = 10 * time.Millisecond
 
@@ -18,60 +18,60 @@ type DiskBufferedChan struct {
 	// LevelDB queue instance
 	ldbQueue *goque.Queue
 
-	// `Source` channel
+	// Source channel
 	// All incoming data comes from here
 	// User is responsible to save any data buffered in here
 	source <-chan interface{}
 
-	// `Sink` channel
+	// Sink channel
 	// All outgoing data sent here
 	// On halt, will try to save all data buffered here on disk
 	sink chan interface{}
 
 	////// Signalling internals below //////
 
-	// `Sink` Waitgroup
-	// Waits stop of both `DiskReader` and `SourceForwarder` routines
+	// Sink Waitgroup
+	// Waits stop of both DiskReader and SourceForwarder routines
 	sinkWg sync.WaitGroup
 
 	// Halt signal channel
-	// When closed signals `SourceForwarder` and `DiskReader` to cease reading/forwarding
-	// After it completes `Sink` will be closed
+	// When closed signals SourceForwarder and DiskReader to cease reading/forwarding
+	// After it completes Sink will be closed
 	chHalt chan struct{}
 
-	// Internal `DiskReader` notification channel
+	// Internal DiskReader notification channel
 	// Not to be closed! TODO: check if it's leaky without closing
-	// Signals `DiskReader`, that new data is available to read from disk
+	// Signals DiskReader, that new data is available to read from disk
 	chDRNotify chan struct{}
 
 	// HaltDone signal channel
-	// Notifies that both `SourceForwarder` and `DiskReader` routines has stopped (just as sinkWg but...),
-	// also that `Sink` is clear of any buffered records (either sucked back on disk, or taken by anything reading sink)
-	// and thah `Sink` will be closed immediately
+	// Notifies that both SourceForwarder and DiskReader routines has stopped (just as sinkWg but...),
+	// also that Sink is clear of any buffered records (either sucked back on disk, or taken by anything reading sink)
+	// and thah Sink will be closed immediately
 	haltDone chan struct{}
 
 	// LevelDB Done signal channel
 	// Notifies that shutdown of everything is complete and LevelDB handler has been closed
 	ldbDone chan struct{}
 
-	// `DiskReader` signal channels
-	// `Abort` initiates immediate `DiskReader` shutdown sequence, leaving data on disk
-	// `FlushAbort` initiates `DiskReader` abort after all current data onk disk has been dumped into `Sink`
-	// `Done` signals that `DiskReader` has finished it's activity
+	// DiskReader signal channels
+	// Abort initiates immediate DiskReader shutdown sequence, leaving data on disk
+	// FlushAbort initiates DiskReader abort after all current data onk disk has been dumped into Sink
+	// Done signals that DiskReader has finished it's activity
 	chDRAbort      chan struct{}
 	chDRFlushAbort chan struct{}
 	chDRDone       chan struct{}
 
-	// `SourceForwarder` signal channels
-	// `Abort` initiates `SourceForwarder` shutdown sequence
-	// `Done` signals that `SourceForwarder` has finished
+	// SourceForwarder signal channels
+	// Abort initiates SourceForwarder shutdown sequence
+	// Done signals that SourceForwarder has finished
 	chFWAbort chan struct{}
 	chFWDone  chan struct{}
 
 	////// Statistics //////
 
-	// Contain counters of `DiskBufferedChan` activity
-	stats  DiskBufferedChanStats
+	// Contain counters of DiskBufferedChan activity
+	stats  diskBufferedChanStats
 	logger genericLogger
 
 	////// Le Generiq de Golangaux™ below //////
@@ -86,17 +86,28 @@ type DiskBufferedChan struct {
 
 	// This is optional callback function.
 	// Called in case of failure to retrieve object from disk.
-	// If it returns `true` then whole DiskBufferedChan is to be halted
+	// If it returns true then whole DiskBufferedChan is to be halted
 	DeqErrCB func(err error) (abort bool)
 
 	// This is optional callback function.
 	// Called in case of failure to decode object retrieved from disk.
 	// This callback can try to recover by returning object of type that should've been decoded.
 	// If it return nil, then object sending is skipped.
-	// If it returns abort param as `true` then whole DiskBufferedChan is to be halted
+	// If it returns abort param as true then whole DiskBufferedChan is to be halted
 	DecErrCB func(item *goque.Item, err error) (obj interface{}, abort bool)
 }
 
+// Create new DiskBufferedChannel.
+//
+// ldbPath - Path to directory where LevelDB will be placed
+//
+// sinkDepth - Size of returned buffered Sink channel
+//
+// decCB - Callback function that is used to decode(cast) interface{} objects stored on disk, back to original ones
+//
+// src - Source channel that DBC will read.
+//
+// logger - Optional logger for more verbose operation, see GenericLogger interface for more info.
 func NewDiskBufferedChan(
 	ldbPath string,
 	sinkDepth int,
@@ -136,7 +147,7 @@ func NewDiskBufferedChan(
 		chFWDone:       make(chan struct{}),
 		chDRNotify:     make(chan struct{}, 1),
 		decCB:          decCB,
-		stats:          DiskBufferedChanStats{},
+		stats:          diskBufferedChanStats{},
 	}
 
 	// Open LevelDB queue
@@ -151,22 +162,22 @@ func NewDiskBufferedChan(
 
 // Returns statistics of current DBC instance
 //
-// `directPasses` is a number of object passed from `Source` to `Sink` without storing on disk
-// `storageWrites` is a number of objects that has been stored to disk
-// `storageReads` is a number of objects that has been read from disk
+// directPasses is a number of object passed from Source to Sink without storing on disk
+// storageWrites is a number of objects that has been stored to disk
+// storageReads is a number of objects that has been read from disk
 //
 // Direct passes is a lot quick relative to latter two, so you should try to minimize number of disk ops
-// first thing to do, would be increasing `sinkDepth`
+// first thing to do, would be increasing sinkDepth
 func (c *DiskBufferedChan) GetStats() (directPasses uint64, storageWrites uint64, storageReads uint64) {
 	return c.stats.GetStats()
 }
 
-// WaitHalt will wait till shutdown of `DiskReader` and `SourceForwarder`
+// WaitHalt will wait till shutdown of DiskReader and SourceForwarder
 func (c *DiskBufferedChan) WaitHalt() {
 	<-c.haltDone
 }
 
-// Initiate halt of current instance (shutdown of `DiskReader` and `SourceForwarder`)
+// Initiate halt of current instance (shutdown of DiskReader and SourceForwarder)
 func (c *DiskBufferedChan) HaltAsync() {
 	// Check if abort is already signalled
 	select {
@@ -177,7 +188,7 @@ func (c *DiskBufferedChan) HaltAsync() {
 	}
 }
 
-// Halt current instance (shutdown of `DiskReader` and `SourceForwarder`) (blocking call)
+// Halt current instance (shutdown of DiskReader and SourceForwarder) (blocking call)
 func (c *DiskBufferedChan) Halt() {
 	c.HaltAsync()
 	c.WaitHalt()

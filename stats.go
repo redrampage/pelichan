@@ -4,25 +4,25 @@ import (
 	"sync/atomic"
 )
 
-type DiskBufferedChanStats struct {
+type diskBufferedChanStats struct {
 	DirectPasses  uint64
 	StorageWrites uint64
 	StorageReads  uint64
 }
 
-func (stats *DiskBufferedChanStats) IncDP() {
+func (stats *diskBufferedChanStats) IncDP() {
 	safeInc(&stats.DirectPasses)
 }
 
-func (stats *DiskBufferedChanStats) IncSW() {
+func (stats *diskBufferedChanStats) IncSW() {
 	safeInc(&stats.StorageWrites)
 }
 
-func (stats *DiskBufferedChanStats) IncSR() {
+func (stats *diskBufferedChanStats) IncSR() {
 	safeInc(&stats.StorageReads)
 }
 
-func (stats *DiskBufferedChanStats) GetStats() (directPasses uint64, storageWrites uint64, storageReads uint64) {
+func (stats *diskBufferedChanStats) GetStats() (directPasses uint64, storageWrites uint64, storageReads uint64) {
 	return atomic.LoadUint64(&stats.DirectPasses),
 		atomic.LoadUint64(&stats.StorageWrites),
 		atomic.LoadUint64(&stats.StorageReads)
