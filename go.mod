@@ -1,7 +1,7 @@
 module github.com/redrampage/pelichan
 
 require (
-	github.com/beeker1121/goque v2.0.1+incompatible
+	github.com/beeker1121/goque v0.0.0-20170321141813-4044bc29b280
 	github.com/fsnotify/fsnotify v1.4.7 // indirect
 	github.com/golang/protobuf v1.2.0 // indirect
 	github.com/golang/snappy v0.0.0-20180518054509-2e65f85255db // indirect
